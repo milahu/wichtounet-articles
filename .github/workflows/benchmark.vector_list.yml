@@ -1,0 +1,173 @@
+name: Benchmark vector_list
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  build-and-run:
+    strategy:
+      # failing jobs should not stop other jobs
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - macos-latest
+          - windows-latest
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout repo (with submodules)
+        uses: actions/checkout@v6
+        with:
+          submodules: recursive
+
+      - name: Patch source
+        run: |
+          # run only N of 10 tests
+          # 10 tests:
+          #   macos: 83 minutes
+          #   linux: 100 minutes
+          #   windows: 151 minutes
+          # 5 tests:
+          #   linux: ? minutes
+          #   macos: ? minutes
+          #   windows: ? minutes
+          # python .github/workflows/benchmark.vector_list.yml.patch.py 2
+          python .github/workflows/benchmark.vector_list.yml.patch.py 5
+
+      # -------------------------
+      # Linux dependencies
+      # -------------------------
+      - name: Install dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            gcc \
+            g++ \
+            cmake \
+            make \
+            libboost-all-dev
+
+      # -------------------------
+      # macOS dependencies
+      # -------------------------
+      - name: Install dependencies (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          # brew update
+          brew install gcc cmake make boost
+
+      # -------------------------
+      # Windows dependencies (MSYS2)
+      # -------------------------
+      - name: Set up MSYS2 (Windows)
+        if: runner.os == 'Windows'
+        uses: msys2/setup-msys2@v2
+        with:
+          update: true
+          install: >
+            mingw-w64-x86_64-toolchain
+            mingw-w64-x86_64-cmake
+            mingw-w64-x86_64-boost
+            make
+
+      - name: Hardware info (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          {
+            echo "RUNNER_OS: $RUNNER_OS"
+            echo "RUNNER_ARCH: $RUNNER_ARCH"
+            echo "RUNNER_NAME: $RUNNER_NAME"
+            echo "cpu:"
+            lscpu
+          } > hardware-info.txt
+
+      - name: Hardware info (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          {
+            echo "RUNNER_OS: $RUNNER_OS"
+            echo "RUNNER_ARCH: $RUNNER_ARCH"
+            echo "RUNNER_NAME: $RUNNER_NAME"
+            echo "CPU Model:" $(sysctl -n machdep.cpu.brand_string || true) # "Apple M1 (Virtual)"
+            echo "Architecture:" $(uname -m)
+            echo "Physical cores:" $(sysctl -n hw.physicalcpu)
+            echo "Logical threads:" $(sysctl -n hw.logicalcpu)
+            echo "Performance cores:" $(sysctl -n hw.perflevel0.physicalcpu || true)
+            echo "Efficiency cores:" $(sysctl -n hw.perflevel1.physicalcpu || true)
+            echo "CPU frequency (Hz):" $(sysctl -n hw.cpufrequency || true)
+            # echo "Full CPU sysctl dump:"
+            # # sysctl -a | grep -E 'machdep.cpu|hw\.physicalcpu|hw\.logicalcpu|hw\.perflevel|hw\.cpufrequency'
+            # sysctl -a | grep -E 'cpu|perflevel'
+            echo "sysctl -a:"
+            sysctl -a
+          } > hardware-info.txt
+
+      - name: Hardware info (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          & {
+            echo "RUNNER_OS: $env:RUNNER_OS"
+            echo "RUNNER_ARCH: $env:RUNNER_ARCH"
+            echo "RUNNER_NAME: $env:RUNNER_NAME"
+            echo "cpu:"
+            Get-CimInstance Win32_Processor | Format-List *
+            # Get-CimInstance Win32_Processor | Select-Object Name, NumberOfCores, NumberOfLogicalProcessors
+          } | Set-Content -Encoding utf8 hardware-info.txt
+
+      # -------------------------
+      # Build (Linux/macOS)
+      # -------------------------
+      - name: Build (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --config Release --target vector_list
+
+      # -------------------------
+      # Build (Windows via MSYS2 shell)
+      # -------------------------
+      - name: Build (Windows)
+        if: runner.os == 'Windows'
+        shell: msys2 {0}
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --config Release --target vector_list
+
+      # -------------------------
+      # Run benchmark (Linux/macOS)
+      # -------------------------
+      - name: Run benchmark (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          ./build/vector_list | tee vector_list.log
+
+      # -------------------------
+      # Run benchmark (Windows)
+      # -------------------------
+      - name: Run benchmark (Windows)
+        if: runner.os == 'Windows'
+        shell: msys2 {0}
+        run: |
+          ./build/vector_list.exe | tee vector_list.log
+
+      # -------------------------
+      # Upload artifact
+      # -------------------------
+      - name: Upload benchmark results
+        uses: actions/upload-artifact@v7
+        with:
+          name: vector_list-${{ matrix.os }}
+          path: vector_list.log
+
+      - name: Upload hardware-info
+        uses: actions/upload-artifact@v4
+        with:
+          name: hardware-info-${{ runner.os }}
+          path: hardware-info.txt
+
